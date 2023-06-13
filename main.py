@@ -1,6 +1,5 @@
 import random
-from time import time, localtime
-import cityinfo
+from time import localtime
 from requests import get, post
 from datetime import datetime, date
 from zhdate import ZhDate
@@ -32,36 +31,82 @@ def get_access_token():
     return access_token
 
 
-def get_weather(province, city):
-    # 城市id
-    try:
-        city_id = cityinfo.cityInfo[province][city]["AREAID"]
-    except KeyError:
-        print("推送消息失败，请检查省份或城市是否正确")
-        os.system("pause")
-        sys.exit(1)
-    # city_id = 101280101
-    # 毫秒级时间戳
-    t = (int(round(time() * 1000)))
+def get_weather(region):
     headers = {
-        "Referer": "http://www.weather.com.cn/weather1d/{}.shtml".format(city_id),
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
                       'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/103.0.0.0 Safari/537.36'
     }
-    url = "http://d1.weather.com.cn/dingzhi/{}.html?_={}".format(city_id, t)
-    response = get(url, headers=headers)
-    response.encoding = "utf-8"
-    response_data = response.text.split(";")[0].split("=")[-1]
-    response_json = eval(response_data)
-    # print(response_json)
-    weatherinfo = response_json["weatherinfo"]
+    key = config["weather_key"]
+    region_url = "https://geoapi.qweather.com/v2/city/lookup?location={}&key={}".format(region, key)
+    response = get(region_url, headers=headers).json()
+    if response["code"] == "404":
+        print("推送消息失败，请检查地区名是否有误！")
+        os.system("pause")
+        sys.exit(1)
+    elif response["code"] == "401":
+        print("推送消息失败，请检查和风天气key是否正确！")
+        os.system("pause")
+        sys.exit(1)
+    else:
+        # 获取地区的location--id
+        location_id = response["location"][0]["id"]
+    weather_url = "https://devapi.qweather.com/v7/weather/now?location={}&key={}".format(location_id, key)
+    response = get(weather_url, headers=headers).json()
     # 天气
-    weather = weatherinfo["weather"]
+    weather = response["now"]["text"]
+    # 当前温度
+    temp = response["now"]["temp"] + u"\N{DEGREE SIGN}" + "C"
+    # 风向
+    wind_dir = response["now"]["windDir"]
+    # 获取逐日天气预报
+    url = "https://devapi.qweather.com/v7/weather/3d?location={}&key={}".format(location_id, key)
+    response = get(url, headers=headers).json()
     # 最高气温
-    temp = weatherinfo["temp"]
+    max_temp = response["daily"][0]["tempMax"] + u"\N{DEGREE SIGN}" + "C"
     # 最低气温
-    tempn = weatherinfo["tempn"]
-    return weather, temp, tempn
+    min_temp = response["daily"][0]["tempMin"] + u"\N{DEGREE SIGN}" + "C"
+    # 日出时间
+    sunrise = response["daily"][0]["sunrise"]
+    # 日落时间
+    sunset = response["daily"][0]["sunset"]
+    url = "https://devapi.qweather.com/v7/air/now?location={}&key={}".format(location_id, key)
+    response = get(url, headers=headers).json()
+    if response["code"] == "200":
+        # 空气质量
+        category = response["now"]["category"]
+        # pm2.5
+        pm2p5 = response["now"]["pm2p5"]
+    else:
+        # 国外城市获取不到数据
+        category = ""
+        pm2p5 = ""
+    id = random.randint(1, 16)
+    url = "https://devapi.qweather.com/v7/indices/1d?location={}&key={}&type={}".format(location_id, key, id)
+    response = get(url, headers=headers).json()
+    proposal = ""
+    if response["code"] == "200":
+        proposal += response["daily"][0]["text"]
+    return weather, temp, max_temp, min_temp, wind_dir, sunrise, sunset, category, pm2p5, proposal
+
+
+def get_tianhang():
+    try:
+        key = config["tian_api"]
+        url = "http://api.tianapi.com/caihongpi/index?key={}".format(key)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                          'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/103.0.0.0 Safari/537.36',
+            'Content-type': 'application/x-www-form-urlencoded'
+
+        }
+        response = get(url, headers=headers).json()
+        if response["code"] == 200:
+            chp = response["newslist"][0]["content"]
+        else:
+            chp = ""
+    except KeyError:
+        chp = ""
+    return chp
 
 
 def get_birthday(birthday, year, today):
@@ -70,10 +115,13 @@ def get_birthday(birthday, year, today):
     if birthday_year[0] == "r":
         r_mouth = int(birthday.split("-")[1])
         r_day = int(birthday.split("-")[2])
-        # 今年生日
-        birthday = ZhDate(year, r_mouth, r_day).to_datetime().date()
-        year_date = birthday
-
+        # 获取农历生日的生日
+        try:
+            year_date = ZhDate(year, r_mouth, r_day).to_datetime().date()
+        except TypeError:
+            print("请检查生日的日子是否在今年存在")
+            os.system("pause")
+            sys.exit(1)
 
     else:
         # 获取国历生日的今年对应月和日
@@ -111,7 +159,8 @@ def get_ciba():
     return note_ch, note_en
 
 
-def send_message(to_user, access_token, city_name, weather, max_temperature, min_temperature, note_ch, note_en):
+def send_message(to_user, access_token, region_name, weather, temp, wind_dir, note_ch, note_en, max_temp, min_temp,
+                 sunrise, sunset, category, pm2p5, proposal, chp):
     url = "https://api.weixin.qq.com/cgi-bin/message/template/send?access_token={}".format(access_token)
     week_list = ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"]
     year = localtime().tm_year
@@ -141,20 +190,20 @@ def send_message(to_user, access_token, city_name, weather, max_temperature, min
                 "value": "{} {}".format(today, week),
                 "color": get_color()
             },
-            "city": {
-                "value": city_name,
+            "region": {
+                "value": region_name,
                 "color": get_color()
             },
             "weather": {
                 "value": weather,
                 "color": get_color()
             },
-            "min_temperature": {
-                "value": min_temperature,
+            "temp": {
+                "value": temp,
                 "color": get_color()
             },
-            "max_temperature": {
-                "value": max_temperature,
+            "wind_dir": {
+                "value": wind_dir,
                 "color": get_color()
             },
             "love_day": {
@@ -168,7 +217,40 @@ def send_message(to_user, access_token, city_name, weather, max_temperature, min
             "note_ch": {
                 "value": note_ch,
                 "color": get_color()
-            }
+            },
+            "max_temp": {
+                "value": max_temp,
+                "color": get_color()
+            },
+            "min_temp": {
+                "value": min_temp,
+                "color": get_color()
+            },
+            "sunrise": {
+                "value": sunrise,
+                "color": get_color()
+            },
+            "sunset": {
+                "value": sunset,
+                "color": get_color()
+            },
+            "category": {
+                "value": category,
+                "color": get_color()
+            },
+            "pm2p5": {
+                "value": pm2p5,
+                "color": get_color()
+            },
+            "proposal": {
+                "value": proposal,
+                "color": get_color()
+            },
+            "chp": {
+                "value": chp,
+                "color": get_color()
+            },
+
         }
     }
     for key, value in birthdays.items():
@@ -215,12 +297,17 @@ if __name__ == "__main__":
     accessToken = get_access_token()
     # 接收的用户
     users = config["user"]
-    # 传入省份和市获取天气信息
-    province, city = config["province"], config["city"]
-    weather, max_temperature, min_temperature = get_weather(province, city)
-    # 获取词霸每日金句
-    note_ch, note_en = get_ciba()
+    # 传入地区获取天气信息
+    region = config["region"]
+    weather, temp, max_temp, min_temp, wind_dir, sunrise, sunset, category, pm2p5, proposal = get_weather(region)
+    note_ch = config["note_ch"]
+    note_en = config["note_en"]
+    if note_ch == "" and note_en == "":
+        # 获取词霸每日金句
+        note_ch, note_en = get_ciba()
+    chp = get_tianhang()
     # 公众号推送消息
     for user in users:
-        send_message(user, accessToken, city, weather, max_temperature, min_temperature, note_ch, note_en)
+        send_message(user, accessToken, region, weather, temp, wind_dir, note_ch, note_en, max_temp, min_temp, sunrise,
+                     sunset, category, pm2p5, proposal, chp)
     os.system("pause")
